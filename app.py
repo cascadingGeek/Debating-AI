@@ -1,10 +1,19 @@
 import streamlit as st
 from datetime import datetime
-from components.bots import debate_flow, State
-from typing import Dict, List, Any
-from components.bots import get_content
+from components.bots import (
+    generate_topic_only, 
+    generate_round_arguments, 
+    generate_final_judgment, 
+    get_content,
+    State
+)
+from typing import Dict, List, Any, cast
+import logging
 
-# Custom CSS for beautiful dark mode
+
+logging.basicConfig(level=logging.INFO)
+
+
 st.set_page_config(
     page_title="Advanced AI Debate Arena", 
     layout="wide",
@@ -63,6 +72,83 @@ st.markdown("""
         font-size: 1.2rem;
         margin-bottom: 2rem;
         font-weight: 300;
+    }
+    
+    /* Processing states */
+    .processing-banner {
+        background: linear-gradient(135deg, rgba(100, 255, 218, 0.2), rgba(0, 230, 118, 0.1));
+        border: 2px solid rgba(100, 255, 218, 0.5);
+        border-radius: 15px;
+        padding: 1.5rem;
+        text-align: center;
+        margin: 1rem 0;
+        color: #64ffda;
+        font-weight: 600;
+        backdrop-filter: blur(20px);
+        animation: pulse 2s ease-in-out infinite alternate;
+    }
+    
+    @keyframes pulse {
+        from { opacity: 0.8; }
+        to { opacity: 1; }
+    }
+    
+    /* Status indicators */
+    .status-indicator {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        font-size: 0.9rem;
+        font-weight: 600;
+        margin: 0.5rem;
+    }
+    
+    .status-ready {
+        background: rgba(0, 230, 118, 0.2);
+        border: 1px solid #00e676;
+        color: #00e676;
+    }
+    
+    .status-processing {
+        background: rgba(255, 193, 7, 0.2);
+        border: 1px solid #ffc107;
+        color: #ffc107;
+    }
+    
+    .status-complete {
+        background: rgba(64, 196, 255, 0.2);
+        border: 1px solid #40c4ff;
+        color: #40c4ff;
+    }
+    
+    /* Enhanced button styling */
+    .round-button {
+        background: linear-gradient(135deg, #ff6b6b, #ee5a24) !important;
+        color: white !important;
+        border: none !important;
+        border-radius: 15px !important;
+        padding: 1rem 2rem !important;
+        font-weight: 600 !important;
+        font-family: 'Inter', sans-serif !important;
+        transition: all 0.3s ease !important;
+        text-transform: uppercase !important;
+        letter-spacing: 1px !important;
+        width: 100% !important;
+        margin: 0.5rem 0 !important;
+    }
+    
+    .round-button:hover {
+        transform: translateY(-2px) !important;
+        box-shadow: 0 10px 30px rgba(255, 107, 107, 0.4) !important;
+    }
+    
+    .judge-button {
+        background: linear-gradient(135deg, #9c88ff, #8c7ae6) !important;
+        color: white !important;
+    }
+    
+    .judge-button:hover {
+        box-shadow: 0 10px 30px rgba(156, 136, 255, 0.4) !important;
     }
     
     /* Debate cards with glassmorphism effect */
@@ -307,20 +393,31 @@ st.markdown("""
         margin-right: 0.5rem;
         filter: drop-shadow(0 0 10px rgba(255, 255, 255, 0.3));
     }
+    
+    /* Error styling */
+    .error-card {
+        background: rgba(255, 82, 82, 0.1);
+        border: 1px solid rgba(255, 82, 82, 0.3);
+        border-radius: 15px;
+        padding: 1rem;
+        margin: 1rem 0;
+        color: #ff5252;
+    }
     </style>
     """, unsafe_allow_html=True)
 
-# Title with custom styling
+
 st.markdown('<h1 class="main-title">🤖 Advanced AI Debate Arena</h1>', unsafe_allow_html=True)
 st.markdown(
-    '<p class="subtitle">Watch as two advanced AI agents engage in a high-level debate on your chosen topic.<br>'
-    'Three rounds of intense argumentation, followed by a clinical judgment.</p>', 
+    '<p class="subtitle">Watch as two advanced AI agents engage in a high-level debate with real-time web research.<br>'
+    'Manual control allows you to progress through each round at your own pace.</p>', 
     unsafe_allow_html=True
 )
 
-# Initialize session state with proper typing
-if "debate_state" not in st.session_state:
-    st.session_state.debate_state = {
+
+def get_initial_state() -> State:
+    """Return a properly typed initial state"""
+    return {
         "topic": [],
         "rounds": [],
         "judge": [],
@@ -328,48 +425,158 @@ if "debate_state" not in st.session_state:
         "current_round": 0,
         "winner": None,
         "pro_argument": [],  
-        "con_argument": []  
+        "con_argument": [],
+        "processing_state": "ready",
+        "ready_for_next_round": False
     }
 
-# User input
-with st.form("debate_form"):
-    user_prompt = st.text_area(
-        "💭 Enter a topic or question for debate:",
-        placeholder="E.g., 'The benefits of AI regulation outweigh the costs'",
-        height=120
-    )
-    submitted = st.form_submit_button("🚀 Start Debate")
 
-if submitted and user_prompt:
-    with st.spinner("🧠 Initializing debate environment..."):
-        # Initialize the debate with proper state structure
-        input_state: State = {
-            "topic": [],
-            "rounds": [],
-            "judge": [],
-            "prompt": [{"role": "user", "content": user_prompt}],
-            "current_round": 0,
-            "winner": None
-        }
-        st.session_state.debate_state = debate_flow.invoke(input_state)
+if "debate_state" not in st.session_state:
+    st.session_state.debate_state = get_initial_state()
+    st.session_state.debate_started = False
 
-# Display debate if active
-if st.session_state.debate_state and len(st.session_state.debate_state["topic"]) > 0:
-    state = st.session_state.debate_state
-    
-    # Display topic
+
+def show_processing_state(state: str, message: str):
+    """Display processing state with animated banner"""
     st.markdown(f"""
-        <div class='debate-card topic-card'>
-            <div class='card-header'>
-                <span class='emoji'>🏁</span>Debate Topic
-            </div>
-            <div class='card-content'>
-                <strong>{get_content(state['topic'][-1])}</strong>
-            </div>
+        <div class='processing-banner'>
+            🔄 {message}
+            <br><small>Using OpenAI Web Search for real-time research...</small>
         </div>
         """, unsafe_allow_html=True)
+
+
+def show_status_indicator(label: str, status: str):
+    """Show status indicator badge"""
+    status_class = f"status-{status}"
+    emoji = {"ready": "⚡", "processing": "🔄", "complete": "✅", "error": "❌"}
+    st.markdown(f"""
+        <span class='status-indicator {status_class}'>
+            {emoji.get(status, "🔄")} {label}
+        </span>
+        """, unsafe_allow_html=True)
+
+
+def show_error(message: str):
+    """Display error message"""
+    st.markdown(f"""
+        <div class='error-card'>
+            ❌ <strong>Error:</strong> {message}
+        </div>
+        """, unsafe_allow_html=True)
+
+
+def update_session_state(new_state: State):
+    """Safely update session state with proper typing"""
+    st.session_state.debate_state = cast(State, new_state)
+
+
+if not st.session_state.debate_started:
+    with st.form("debate_form"):
+        user_prompt = st.text_area(
+            "💭 Enter a topic or question for debate:",
+            placeholder="E.g., 'The benefits of AI regulation outweigh the costs'",
+            height=120
+        )
+        submitted = st.form_submit_button("🚀 Generate Debate Topic")
+
+    if submitted and user_prompt:
+        try:
+            show_processing_state("generating_topic", "Generating Debate Topic")
+            
+            with st.spinner("🧠 Researching topic and generating debate framework..."):
+                result_state = generate_topic_only(user_prompt)
+                
+                if result_state.get("processing_state") == "error":
+                    show_error("Failed to generate topic. Please try again.")
+                else:
+                    update_session_state(result_state)
+                    st.session_state.debate_started = True
+                    st.rerun()
+                    
+        except Exception as e:
+            logging.error(f"Topic generation error: {str(e)}")
+            show_error(f"Topic generation failed: {str(e)}")
+
+
+if st.session_state.debate_started:
+    state = cast(State, st.session_state.debate_state)
     
-    # Display rounds
+    
+    if state.get("processing_state") == "error":
+        show_error("An error occurred during debate processing. Please restart.")
+        if st.button("🔄 Restart Debate"):
+            st.session_state.debate_state = get_initial_state()
+            st.session_state.debate_started = False
+            st.rerun()
+        st.stop()
+    
+    
+    if len(state["topic"]) > 0:
+        topic_content = get_content(state['topic'][-1])
+        st.markdown(f"""
+            <div class='debate-card topic-card'>
+                <div class='card-header'>
+                    <span class='emoji'>🏁</span>Debate Topic
+                </div>
+                <div class='card-content'>
+                    <strong>{topic_content}</strong>
+                </div>
+            </div>
+            """, unsafe_allow_html=True)
+        
+        
+        show_status_indicator("Topic Generated", "complete")
+    
+    
+    st.markdown("### 🎮 Debate Control Panel")
+    
+    current_round = state["current_round"]
+    max_rounds = 3
+    
+    
+    col1, col2, col3 = st.columns(3)
+    for i in range(max_rounds):
+        with [col1, col2, col3][i]:
+            if i < current_round:
+                show_status_indicator(f"Round {i+1}", "complete")
+            elif i == current_round and state.get("processing_state") in ["generating_arguments", "pro_complete", "con_complete"]:
+                show_status_indicator(f"Round {i+1}", "processing")
+            else:
+                show_status_indicator(f"Round {i+1}", "ready")
+    
+    
+    if current_round < max_rounds:
+        processing_states = ["generating_arguments", "pro_complete", "con_complete"]
+        if state.get("processing_state") not in processing_states:
+            if st.button(f"🥊 Start Round {current_round + 1}", key=f"round_{current_round + 1}"):
+                try:
+                    show_processing_state("generating_arguments", f"Generating Round {current_round + 1} Arguments")
+                    
+                    with st.spinner(f"🔬 Round {current_round + 1} in progress - Conducting web research..."):
+                        updated_state = generate_round_arguments(state)
+                        
+                        if updated_state.get("processing_state") == "error":
+                            show_error("Failed to generate round arguments. Please try again.")
+                        else:
+                            update_session_state(updated_state)
+                            st.rerun()
+                            
+                except Exception as e:
+                    logging.error(f"Round generation error: {str(e)}")
+                    show_error(f"Round generation failed: {str(e)}")
+        else:
+            
+            processing_messages = {
+                "generating_arguments": f"Generating Round {current_round + 1} Arguments",
+                "pro_complete": "PRO argument complete, generating CON argument",
+                "con_complete": "Round arguments complete, updating debate"
+            }
+            current_processing = state.get("processing_state", "processing")
+            if current_processing in processing_messages:
+                show_processing_state(current_processing, processing_messages[current_processing])
+    
+    
     for i, round_data in enumerate(state["rounds"]):
         st.markdown(f'<div class="round-header">🏟 Round {i+1}</div>', unsafe_allow_html=True)
         
@@ -399,49 +606,103 @@ if st.session_state.debate_state and len(st.session_state.debate_state["topic"])
                 </div>
                 """, unsafe_allow_html=True)
     
-    # Display judgment if available
+    
+    if current_round >= max_rounds and len(state["rounds"]) == max_rounds:
+        if len(state["judge"]) == 0:
+            if state.get("processing_state") != "generating_judgment":
+                st.markdown("### ⚖️ Ready for Final Judgment")
+                if st.button("👨‍⚖️ Generate Judge's Decision", key="judge_button"):
+                    try:
+                        show_processing_state("generating_judgment", "Judge Analyzing Arguments and Fact-Checking")
+                        
+                        with st.spinner("⚖️ Judge analyzing arguments and fact-checking claims..."):
+                            updated_state = generate_final_judgment(state)
+                            
+                            if updated_state.get("processing_state") == "error":
+                                show_error("Failed to generate judgment. Please try again.")
+                            else:
+                                update_session_state(updated_state)
+                                st.rerun()
+                                
+                    except Exception as e:
+                        logging.error(f"Judgment generation error: {str(e)}")
+                        show_error(f"Judgment generation failed: {str(e)}")
+            else:
+                show_processing_state("generating_judgment", "Judge Analyzing Arguments and Fact-Checking")
+    
+    
     if len(state["judge"]) > 0:
         st.markdown('<div class="round-header">⚖️ Final Judgment</div>', unsafe_allow_html=True)
+        judge_content = get_content(state['judge'][-1])
         st.markdown(f"""
             <div class='debate-card judge-card'>
                 <div class='card-header'>
                     <span class='emoji'>👨‍⚖️</span>Judge's Decision
                 </div>
                 <div class='card-content'>
-                    {get_content(state['judge'][-1])}
+                    {judge_content}
                 </div>
             </div>
             """, unsafe_allow_html=True)
         
         # Display winner banner if available
-        if state.get("winner"):
-            winner_class = "pro-winner" if state["winner"] == "PRO" else "con-winner"
-            winner_emoji = "🟢" if state["winner"] == "PRO" else "🔴"
+        winner = state.get("winner")
+        if winner and winner != "ERROR":
+            winner_class = "pro-winner" if winner == "PRO" else "con-winner"
+            winner_emoji = "🟢" if winner == "PRO" else "🔴"
             st.markdown(f"""
                 <div class='winner-banner {winner_class}'>
-                    🏆 {winner_emoji} Winner: {state['winner']} {winner_emoji} 🏆
+                    🏆 {winner_emoji} Winner: {winner} {winner_emoji} 🏆
                 </div>
                 """, unsafe_allow_html=True)
         
-        # Add download button with spacing
+        # Add download button and restart option
         st.markdown("<br>", unsafe_allow_html=True)
         
-        debate_text = f"Debate Transcript - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
-        debate_text += f"TOPIC: {get_content(state['topic'][-1])}\n\n"
+        col1, col2 = st.columns(2)
         
-        for i, round_data in enumerate(state["rounds"]):
-            debate_text += f"\n=== ROUND {i+1} ===\n"
-            debate_text += f"\nPRO:\n{round_data['pro']}\n"
-            debate_text += f"\nCON:\n{round_data['con']}\n"
+        with col1:
+            # Generate transcript
+            try:
+                topic_text = get_content(state['topic'][-1]) if state['topic'] else "No topic"
+                judge_text = get_content(state['judge'][-1]) if state['judge'] else "No judgment"
+                
+                debate_text = f"AI Debate Transcript - {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n"
+                debate_text += f"TOPIC: {topic_text}\n\n"
+                
+                for i, round_data in enumerate(state["rounds"]):
+                    debate_text += f"\n=== ROUND {i+1} ===\n"
+                    debate_text += f"\nPRO:\n{round_data['pro']}\n"
+                    debate_text += f"\nCON:\n{round_data['con']}\n"
+                
+                debate_text += f"\n=== JUDGMENT ===\n{judge_text}"
+                
+                if winner and winner != "ERROR":
+                    debate_text += f"\n\nWINNER: {winner}"
+                
+                st.download_button(
+                    label="📄 Download Transcript",
+                    data=debate_text,
+                    file_name=f"debate_transcript_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
+                    mime="text/plain"
+                )
+            except Exception as e:
+                logging.error(f"Transcript generation error: {str(e)}")
+                st.error("Failed to generate transcript")
         
-        debate_text += f"\n=== JUDGMENT ===\n{get_content(state['judge'][-1])}"
-        
-        if state.get("winner"):
-            debate_text += f"\n\nWINNER: {state['winner']}"
-        
-        st.download_button(
-            label="📄 Download Debate Transcript",
-            data=debate_text,
-            file_name=f"debate_transcript_{datetime.now().strftime('%Y%m%d_%H%M')}.txt",
-            mime="text/plain"
-        )
+        with col2:
+            if st.button("🔄 Start New Debate"):
+                # Reset session state
+                st.session_state.debate_state = get_initial_state()
+                st.session_state.debate_started = False
+                st.rerun()
+
+# Footer with additional information
+st.markdown("---")
+st.markdown("""
+<div style='text-align: center; color: #b0bec5; font-size: 0.9rem; margin-top: 2rem;'>
+    🔬 <strong>Enhanced with OpenAI Web Search Preview</strong> - Real-time research and fact-checking<br>
+    🎯 Manual round control for better pacing and analysis<br>
+    ⚡ Advanced AI agents with current information integration
+</div>
+""", unsafe_allow_html=True)
